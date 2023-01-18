@@ -31,28 +31,7 @@ from fabric import Connection, task
 
 sys.path.append('../../orc8r')
 import tools.fab.pkg as pkg
-from tools.fab.dev_utils import connect_gateway_to_cloud
 from tools.fab.hosts import ansible_setup, vagrant_connection, vagrant_setup
-
-"""
-Magma Gateway packaging tool:
-
-Magma packages released to different channels have different version schemes.
-
-    - dev: used for development.
-
-    - release: used for Continuous Integration (CI). Packages in the `release`
-            channel should be built and released automatically.
-
-# HOWTO build magma.deb
-
-1. From your laptop, update the magma version number in `release/build-magma.sh`
-
-2. From the dev VM, build the magma package. Dependency packages are recorded
-in `release/magma.lockfile`
-
-    fab dev package
-"""
 
 GATEWAY_IP_ADDRESS = "192.168.60.142"
 AGW_ROOT = "$MAGMA_ROOT/lte/gateway"
@@ -61,101 +40,8 @@ FEG_INTEG_TEST_ROOT = AGW_PYTHON_ROOT + "/integ_tests/federated_tests"
 FEG_INTEG_TEST_DOCKER_ROOT = FEG_INTEG_TEST_ROOT + "/docker"
 ORC8R_AGW_PYTHON_ROOT = "$MAGMA_ROOT/orc8r/gateway/python"
 AGW_INTEG_ROOT = "$MAGMA_ROOT/lte/gateway/python/integ_tests"
-DEFAULT_CERT = "$MAGMA_ROOT/.cache/test_certs/rootCA.pem"
-DEFAULT_PROXY = "$MAGMA_ROOT/lte/gateway/configs/control_proxy.yml"
 TEST_SUMMARY_GLOB = "/var/tmp/test_results/*.xml"
 debug_mode = None
-
-
-@task
-def dev(c):
-    global debug_mode
-    debug_mode = True
-
-
-@task
-def release(c):
-    """Set debug_mode to False, should be used for producing a production AGW package"""
-    global debug_mode
-    debug_mode = False
-
-
-@task
-def package(
-    c, all_deps=False,
-    cert_file=DEFAULT_CERT, proxy_config=DEFAULT_PROXY,
-    destroy_vm=False,
-    vm='magma', os="ubuntu",
-):
-    """ Builds the magma package """
-
-    global debug_mode
-    if debug_mode is None:
-        print(
-            "Error: The Deploy target isn't specified. Specify one with\n\n" +
-            "\tfab [dev|release] package",
-        )
-        sys.exit(1)
-
-    hash = pkg.get_commit_hash(c)
-    commit_count = pkg.get_commit_count(c)
-
-    with vagrant_connection(c, vm, destroy_vm=destroy_vm) as c_gw:
-        print('Uninstalling dev dependencies of the VM')
-        c_gw.run('sudo pip uninstall --yes mypy-protobuf grpcio-tools grpcio protobuf')
-
-        with c_gw.cd('~/magma/lte/gateway'):
-            c_gw.run('mkdir -p ~/magma-deps')
-            print(
-                'Generating lte/setup.py and orc8r/setup.py magma dependency packages',
-            )
-            c_gw.run(
-                './release/pydep finddep --install-from-repo -b --build-output '
-                + '~/magma-deps'
-                + f' -l ./release/magma.lockfile.{os}'
-                + ' python/setup.py'
-                + f' {ORC8R_AGW_PYTHON_ROOT}/setup.py',
-            )
-
-            print(f'Building magma package, picking up commit {hash}...')
-            c_gw.run('make clean')
-            build_type = "Debug" if debug_mode else "RelWithDebInfo"
-
-            build_cmd = f'./release/build-magma.sh --hash {hash}' \
-                        f' --commit-count {commit_count} --type {build_type}' \
-                        f' --cert {cert_file} --proxy {proxy_config} --os {os}'
-            # set '/usr/bin/' in PATH to ensure that the correct version of
-            # python is used
-            c_gw.run(
-                build_cmd,
-                env={'PATH': '/usr/bin:/usr/local/go/bin:/home/vagrant/go/bin:/usr/lib/ccache:$PATH'},
-            )
-
-            c_gw.run('rm -rf ~/magma-packages')
-            c_gw.run('mkdir -p ~/magma-packages')
-            c_gw.run('cp -f ~/magma-deps/*.deb ~/magma-packages', warn=True)
-            c_gw.run('mv *.deb ~/magma-packages')
-
-            with c_gw.cd('release'):
-                mirrored_packages_file = 'mirrored_packages'
-                if os == "ubuntu":
-                    mirrored_packages_file += '_focal'
-                if vm and vm.startswith('magma_'):
-                    mirrored_packages_file += vm[5:]
-
-                c_gw.run(
-                    f'cat {mirrored_packages_file}'
-                    + ' | xargs -I% sudo aptitude download -q2 %',
-                )
-                c_gw.run('cp *.deb ~/magma-packages')
-                c_gw.run('sudo rm -f *.deb')
-
-            if all_deps:
-                pkg.download_all_pkgs(c_gw)
-                c_gw.run('cp /var/cache/apt/archives/*.deb ~/magma-packages')
-
-            # Copy out C executables into magma-packages as well
-            _copy_out_c_execs_in_magma_vm(c_gw)
 
 
 @task
@@ -300,58 +186,6 @@ def _setup_gateway(
     else:
         gateway_ip = gateway_host.split('@')[1].split(':')[0]
     return gateway_connection, gateway_ip
-
-
-@task
-def integ_test(
-    c, gateway_host=None, test_host=None, trf_host=None,
-    destroy_vm=True, provision_vm=True,
-):
-    """
-    Run the integration tests. This defaults to running on local vagrant
-    machines, but can also be pointed to an arbitrary host (e.g. amazon) by
-    passing "address:port" as arguments
-
-    gateway_host: The ssh address string of the machine to run the gateway
-        services on. Formatted as "host:port". If not specified, defaults to
-        the `magma` vagrant box.
-
-    test_host: The ssh address string of the machine to run the tests on
-        on. Formatted as "host:port". If not specified, defaults to the
-        `magma_test` vagrant box.
-
-    trf_host: The ssh address string of the machine to run the TrafficServer
-        on. Formatted as "host:port". If not specified, defaults to the
-        `magma_trfserver` vagrant box.
-    """
-
-    # Set up the gateway: use the provided gateway if given, else default to the
-    # vagrant machine
-    c_gw, gateway_ip = _setup_gateway(
-        c, gateway_host, "magma", "dev", "magma_dev.yml", destroy_vm,
-        provision_vm,
-    )
-    with c_gw:
-        _build_magma(c_gw)
-        _start_gateway(c_gw)
-
-    # Set up the trfserver: use the provided trfserver if given, else default to the
-    # vagrant machine
-    c_trf, _ = _setup_vm(
-        c, trf_host, "magma_trfserver", "trfserver", "magma_trfserver.yml",
-        destroy_vm, provision_vm,
-    )
-    with c_trf:
-        _start_trfserver(c_trf)
-
-    # Run the tests: use the provided test machine if given, else default to
-    # the vagrant machine
-    c_test, test_host_data = _setup_vm(
-        c, test_host, "magma_test", "test", "magma_test.yml", destroy_vm,
-        provision_vm,
-    )
-    # run this on the host, not on the vm, as it will connect to the vm via ssh
-    _run_integ_tests(c, test_host_data, gateway_ip=gateway_ip)
 
 
 @task
@@ -625,32 +459,6 @@ def build_and_start_magma_trf(c, destroy_vm=False, provision_vm=False):
     )
     with c_trf:
         _start_trfserver(c_trf)
-
-
-def _copy_out_c_execs_in_magma_vm(c_gw):
-    exec_paths = [
-        '/usr/local/bin/sessiond', '/usr/local/bin/mme',
-        '/usr/local/sbin/sctpd', '/usr/local/bin/connectiond',
-        '/usr/local/bin/liagentd',
-    ]
-    dest_path = '~/magma-packages/executables'
-    c_gw.run('mkdir -p ' + dest_path, warn=True)
-    for exec_path in exec_paths:
-        if not c_gw.run(f"test -e {exec_path}", warn=True).ok:
-            print(exec_path + " does not exist")
-            continue
-        c_gw.run('cp ' + exec_path + ' ' + dest_path, warn=True)
-
-
-def _build_magma(c_gw):
-    """
-    Build magma on AGW
-    """
-    with c_gw.cd(AGW_ROOT):
-        c_gw.run(
-            env={'PATH': '$PATH:/usr/local/go/bin:/home/vagrant/go/bin'},
-            command='make',
-        )
 
 
 def _start_gateway(c_gw):
