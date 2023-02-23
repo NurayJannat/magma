@@ -307,7 +307,7 @@ services:
     restart: "no"
 
   sentrad:
-    build: '/var/opt/mumble-docker/'
+    build: '/opt/mumble-docker/'
     container_name: sentrad
     ports:
       - "64738:64738/tcp"
