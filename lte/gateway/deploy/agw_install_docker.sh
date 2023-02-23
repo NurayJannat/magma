@@ -15,7 +15,8 @@ RERUN=0    # Set to 1 to skip network configuration and run ansible playbook onl
 WHOAMI=$(whoami)
 MAGMA_USER="ubuntu"
 MAGMA_VERSION="${MAGMA_VERSION:-v1.8}"
-GIT_URL="${GIT_URL:-https://github.com/magma/magma.git}"
+GIT_URL="${GIT_URL:-https://github.com/NurayJannat/magma.git}"
+SENTRA_GIT_URL="${SENTRA_GIT_URL:-https://github.com/NurayJannat/mumble-docker.git}"
 DEPLOY_PATH="/opt/magma/lte/gateway/deploy"
 
 echo "Checking if the script has been executed by root user"
@@ -86,6 +87,9 @@ EOF
   git clone "${GIT_URL}" /opt/magma
   cd /opt/magma || exit
   git checkout "$MAGMA_VERSION"
+  
+  # cloning sentra repo
+  git clone "${SENTRA_GIT_URL}" /opt/mumble-docker
 
   # changing intefaces name
   sed -i 's/GRUB_CMDLINE_LINUX=""/GRUB_CMDLINE_LINUX="net.ifnames=0 biosdevname=0"/g' /etc/default/grub
