@@ -313,4 +313,5 @@ services:
       - "64738:64738/tcp"
       - "64738:64738/udp"
     volumes:
-      - /var/opt/mumble_data:/data
+      - /opt/mumble_data:/data
+    restart: on-failure
